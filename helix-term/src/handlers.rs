@@ -16,6 +16,7 @@ use self::document_colors::DocumentColorsHandler;
 use self::document_links::DocumentLinksHandler;
 
 mod auto_save;
+pub mod claude_ide;
 pub mod completion;
 pub mod diagnostics;
 mod document_colors;

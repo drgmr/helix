@@ -464,6 +464,7 @@ impl MappableCommand {
         extend_to_column, "Extend to column",
         goto_next_buffer, "Goto next buffer",
         goto_previous_buffer, "Goto previous buffer",
+        claude_ide_mention, "Send current selection to Claude Code as an @-mention",
         goto_line_end_newline, "Goto newline at line end",
         goto_first_nonwhitespace, "Goto first non-blank in line",
         trim_selections, "Trim whitespace from selections",
@@ -908,6 +909,12 @@ fn goto_line_start(cx: &mut Context) {
 
 fn goto_next_buffer(cx: &mut Context) {
     goto_buffer(cx.editor, Direction::Forward, cx.count());
+}
+
+fn claude_ide_mention(cx: &mut Context) {
+    if let Err(e) = crate::handlers::claude_ide::mention_current_selection(cx.editor) {
+        cx.editor.set_error(e.to_string());
+    }
 }
 
 fn goto_previous_buffer(cx: &mut Context) {

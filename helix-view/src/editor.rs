@@ -434,6 +434,21 @@ pub struct Config {
     pub buffer_picker: BufferPickerConfig,
     /// Whether to implicitly trust every workspace or not
     pub insecure: bool,
+    /// Claude Code IDE integration.
+    pub claude_ide: ClaudeIdeConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
+pub struct ClaudeIdeConfig {
+    /// Whether to start the Claude Code IDE WebSocket server on launch.
+    pub enable: bool,
+}
+
+impl Default for ClaudeIdeConfig {
+    fn default() -> Self {
+        Self { enable: false }
+    }
 }
 
 #[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize, Clone, Copy)]
@@ -1157,6 +1172,7 @@ impl Default for Config {
             kitty_keyboard_protocol: Default::default(),
             buffer_picker: BufferPickerConfig::default(),
             insecure: false,
+            claude_ide: ClaudeIdeConfig::default(),
         }
     }
 }

@@ -1228,6 +1228,37 @@ fn show_clipboard_provider(
     Ok(())
 }
 
+fn claude_ide_status(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let enabled = cx.editor.config().claude_ide.enable;
+    if enabled {
+        cx.editor
+            .set_status("Claude Code IDE integration: enabled (see ~/.claude/ide/*.lock)");
+    } else {
+        cx.editor.set_status(
+            "Claude Code IDE integration: disabled (set editor.claude-ide.enable = true)",
+        );
+    }
+    Ok(())
+}
+
+fn claude_ide_mention(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    crate::handlers::claude_ide::mention_current_selection(cx.editor)
+}
+
 /// Helper function to parse the first argument as a directory
 #[inline]
 fn parse_first_arg_as_dir(args: &Args, last_cwd: Option<PathBuf>) -> anyhow::Result<PathBuf> {
@@ -3404,6 +3435,28 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &[],
         doc: "Show clipboard provider name in status bar.",
         fun: show_clipboard_provider,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "claude-ide-status",
+        aliases: &[],
+        doc: "Show Claude Code IDE integration status.",
+        fun: claude_ide_status,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "claude-ide-mention",
+        aliases: &[],
+        doc: "Send the current selection to Claude Code as an @-mention.",
+        fun: claude_ide_mention,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),

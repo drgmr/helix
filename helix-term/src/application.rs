@@ -79,6 +79,8 @@ pub struct Application {
     lsp_progress: LspProgressMap,
 
     theme_mode: Option<theme::Mode>,
+
+    claude_ide: Option<crate::handlers::claude_ide::ClaudeIde>,
 }
 
 #[cfg(feature = "integration")]
@@ -251,6 +253,33 @@ impl Application {
         ])
         .context("build signal handler")?;
 
+        let claude_ide = if config.load().editor.claude_ide.enable {
+            let workspace_folders = std::env::current_dir().ok().into_iter().collect();
+            match helix_claude_ide::start(
+                helix_claude_ide::Config::default(),
+                workspace_folders,
+            ) {
+                Ok(handle) => {
+                    crate::handlers::claude_ide::install_notifier(handle.notifications.clone());
+                    crate::handlers::claude_ide::register_hooks(
+                        handle.snapshot.clone(),
+                        handle.notifications.clone(),
+                    );
+                    editor.set_status(format!(
+                        "Claude Code IDE: ws://127.0.0.1:{}",
+                        handle.port
+                    ));
+                    Some(crate::handlers::claude_ide::ClaudeIde::new(handle))
+                }
+                Err(e) => {
+                    log::warn!("failed to start Claude Code IDE integration: {e:#}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         let app = Self {
             compositor,
             terminal,
@@ -260,6 +289,7 @@ impl Application {
             jobs,
             lsp_progress: LspProgressMap::new(),
             theme_mode,
+            claude_ide,
         };
 
         Ok(app)
@@ -361,6 +391,15 @@ impl Application {
                             return true;
                         }
                     }
+                }
+                Some(cmd) = async {
+                    match self.claude_ide.as_mut() {
+                        Some(c) => c.handle.commands.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    crate::handlers::claude_ide::drain(&mut self.editor, &mut self.jobs, cmd);
+                    self.render().await;
                 }
             }
 
