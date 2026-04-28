@@ -472,6 +472,33 @@ impl AsyncHook for SelectionDebounce {
 
 // ---------- at-mention command helper ----------
 
+/// Compute the 0-indexed inclusive line range to send with an at-mention.
+/// The Claude Code IDE protocol uses 0-indexed lines (LSP convention).
+///
+/// Returns `(None, None)` when every range looks like a parked cursor
+/// (Helix's minimum 1-char range) so Claude treats it as "whole file."
+fn mention_line_range(
+    text: &Rope,
+    selection: &helix_core::Selection,
+) -> (Option<usize>, Option<usize>) {
+    let has_real_selection = selection.ranges().iter().any(|r| r.to() - r.from() > 1);
+    if !has_real_selection {
+        return (None, None);
+    }
+    let mut min_line = usize::MAX;
+    let mut max_line = 0usize;
+    for r in selection.ranges() {
+        if r.to() - r.from() <= 1 {
+            continue;
+        }
+        let s = text.char_to_line(r.from());
+        let e = text.char_to_line(r.to().saturating_sub(1).max(r.from()));
+        min_line = min_line.min(s);
+        max_line = max_line.max(e);
+    }
+    (Some(min_line), Some(max_line))
+}
+
 /// Build an `at_mentioned` notification from the current editor state and send
 /// it. Called by the `<space>@` keybinding and the `:claude-ide-mention` cmd.
 pub fn mention_current_selection(editor: &mut Editor) -> anyhow::Result<()> {
@@ -487,26 +514,7 @@ pub fn mention_current_selection(editor: &mut Editor) -> anyhow::Result<()> {
         .clone();
     let selection = doc.selection(view_id);
     let text = doc.text();
-    // For multi-selections, mention the line span covering every range.
-    // If every range is just a cursor (<=1 char) we treat this as "no
-    // selection" and omit line numbers so Claude sees the whole file.
-    let has_real_selection = selection.ranges().iter().any(|r| r.to() - r.from() > 1);
-    let (line_start, line_end) = if has_real_selection {
-        let mut min_line = usize::MAX;
-        let mut max_line = 0usize;
-        for r in selection.ranges() {
-            if r.to() - r.from() <= 1 {
-                continue;
-            }
-            let s = text.char_to_line(r.from());
-            let e = text.char_to_line(r.to().saturating_sub(1).max(r.from()));
-            min_line = min_line.min(s);
-            max_line = max_line.max(e);
-        }
-        (Some(min_line + 1), Some(max_line + 1))
-    } else {
-        (None, None)
-    };
+    let (line_start, line_end) = mention_line_range(text, selection);
 
     let tx = NOTIFIER.get().ok_or_else(|| {
         anyhow!("claude-code IDE server not running (enable with editor.claude-ide.enable)")
@@ -530,4 +538,133 @@ pub fn drain(editor: &mut Editor, jobs: &mut Jobs, cmd: Command) {
         scroll: None,
     };
     handle_command(&mut cx, cmd);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mention_line_range;
+    use helix_core::{Range, Rope, Selection};
+
+    fn rope(s: &str) -> Rope {
+        Rope::from_str(s)
+    }
+
+    /// Helper: line `n` (1-indexed) start char index in `text`.
+    fn line_start(text: &Rope, line_1: usize) -> usize {
+        text.line_to_char(line_1 - 1)
+    }
+
+    #[test]
+    fn cursor_only_no_selection() {
+        let text = rope("abc\ndef\nghi\n");
+        // 1-char cursor parked on 'd' (line 2, col 0).
+        let sel = Selection::single(4, 5);
+        assert_eq!(mention_line_range(&text, &sel), (None, None));
+    }
+
+    #[test]
+    fn one_char_selection_treated_as_no_selection() {
+        // Single char produced by `f`-style motion onto the next char.
+        let text = rope("abc\ndef\nghi\n");
+        let sel = Selection::single(4, 5);
+        assert_eq!(mention_line_range(&text, &sel), (None, None));
+    }
+
+    #[test]
+    fn word_selection_within_line_3() {
+        let text = rope("aaa\nbbb\nccc ddd\n");
+        // Select "ccc" on line 3 (0-indexed line 2).
+        let start = line_start(&text, 3);
+        let sel = Selection::single(start, start + 3);
+        assert_eq!(mention_line_range(&text, &sel), (Some(2), Some(2)));
+    }
+
+    #[test]
+    fn x_selects_line_3_only() {
+        // After `x` on line 3 (0-indexed line 2): [start_line_3, start_line_4).
+        let text = rope("aaa\nbbb\nccc\nddd\n");
+        let from = line_start(&text, 3);
+        let to = line_start(&text, 4);
+        let sel = Selection::single(from, to);
+        assert_eq!(mention_line_range(&text, &sel), (Some(2), Some(2)));
+    }
+
+    #[test]
+    fn xx_selects_lines_3_and_4() {
+        let text = rope("aaa\nbbb\nccc\nddd\neee\n");
+        let from = line_start(&text, 3);
+        let to = line_start(&text, 5);
+        let sel = Selection::single(from, to);
+        assert_eq!(mention_line_range(&text, &sel), (Some(2), Some(3)));
+    }
+
+    #[test]
+    fn selection_ending_at_col_0_excludes_trailing_line() {
+        // Selection from line 2 col 0 through line 4 col 0 — visually,
+        // lines 2 and 3 are highlighted; line 4 is just where the cursor parks.
+        let text = rope("aaa\nbbb\nccc\nddd\n");
+        let from = line_start(&text, 2);
+        let to = line_start(&text, 4);
+        let sel = Selection::single(from, to);
+        assert_eq!(mention_line_range(&text, &sel), (Some(1), Some(2)));
+    }
+
+    #[test]
+    fn selection_ending_mid_line_includes_that_line() {
+        let text = rope("aaa\nbbb\nccc\nddd\n");
+        let from = line_start(&text, 2);
+        let to = line_start(&text, 4) + 2; // mid line 4
+        let sel = Selection::single(from, to);
+        assert_eq!(mention_line_range(&text, &sel), (Some(1), Some(3)));
+    }
+
+    #[test]
+    fn x_on_last_line_with_no_trailing_newline() {
+        // File whose last line has no trailing \n. `x` on that final line.
+        // Helix's extend_line_below clamps `to` to len_lines(), so
+        // selection becomes [start_last, len_chars).
+        let text = rope("aaa\nbbb\nccc");
+        let from = line_start(&text, 3);
+        let to = text.len_chars();
+        let sel = Selection::single(from, to);
+        assert_eq!(mention_line_range(&text, &sel), (Some(2), Some(2)));
+    }
+
+    #[test]
+    fn x_on_line_with_multibyte_grapheme_at_eol() {
+        let text = rope("aaa\nbb🚀\nccc\n");
+        let from = line_start(&text, 2);
+        let to = line_start(&text, 3);
+        let sel = Selection::single(from, to);
+        assert_eq!(mention_line_range(&text, &sel), (Some(1), Some(1)));
+    }
+
+    #[test]
+    fn multi_cursor_lines_2_and_5_with_real_selections() {
+        let text = rope("aaa\nbbb\nccc\nddd\neee\nfff\n");
+        let r1_from = line_start(&text, 2);
+        let r1_to = line_start(&text, 3);
+        let r2_from = line_start(&text, 5);
+        let r2_to = line_start(&text, 6);
+        let sel = Selection::new(
+            smallvec::smallvec![Range::new(r1_from, r1_to), Range::new(r2_from, r2_to)],
+            0,
+        );
+        assert_eq!(mention_line_range(&text, &sel), (Some(1), Some(4)));
+    }
+
+    #[test]
+    fn matches_users_repro_x_on_line_25_sends_24() {
+        // User's repro: cursor on line 25 (1-indexed), `x`, `<space>@`.
+        // We must send 0-indexed 24, which the Claude CLI renders as #L25.
+        let mut s = String::new();
+        for i in 1..=30 {
+            s.push_str(&format!("line{i}\n"));
+        }
+        let text = rope(&s);
+        let from = line_start(&text, 25);
+        let to = line_start(&text, 26);
+        let sel = Selection::single(from, to);
+        assert_eq!(mention_line_range(&text, &sel), (Some(24), Some(24)));
+    }
 }
